@@ -1,0 +1,352 @@
+---
+title: 'Etude : méthodes de traitement des séries temporelles '
+author: "Marlène Chevalier"
+date: "12/01/2020"
+output:
+  html_document:
+    number_sections: 4
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+Executive Master Statistique et Big Data  
+enseignant : Jonathan El-Methni (Paris Descartes)
+
+
+<style type="text/css">
+body{ /* Normal  */
+font-size: 12px;
+}
+td {  /* Table  */
+font-size: 12px;
+}
+h1.title {
+font-size: 26px;
+color: Blue;
+}
+
+h1 { /* Header 1 */
+font-size: 20px;
+color: Blue;
+}
+h2 { /* Header 2 */
+font-size: 16px;
+color: Blue;
+}
+h3 { /* Header 3 */
+font-size: 14px;
+font-family: "Times New Roman", Times, serif;
+color: Blue;
+}
+</style>
+
+<style>
+#TOC {
+  color: Blue; 
+}
+
+</style>
+
+
+```{r setup, warning=FALSE, echo=FALSE, include=FALSE}
+
+#packages utilisés
+library(knitr)
+library(forecast)
+library(infer)
+
+```
+
+
+# Sujet : voyageurs SNCF
+L’étude porte sur le nombre mensuel de voyageurs ayant emprunté le réseau SNCF entre janvier 1963 et décembre 1980. Les données sont issues du site https://freakonometrics.hypotheses.org.   
+
+Il s'agit de donner les caractéristiques de cette serie temporelle, d'en étudier la décomposition, d'en donner une modélisation en comparant différents modèles et leurs prévisions.  
+
+**Chargement des données**  
+
+```{r chargt, echo=TRUE} 
+# chargement des données sources : matrice à 18 lignes (années) et 13 colonnes (titre année et 12 mois)
+sncf=read.table("http://freakonometrics.free.fr/sncf.csv",header=TRUE,sep=";")
+# conversion des données en matrice 2 colonnes : indice et nombre de passagers
+sncf_vec=as.vector(t(as.matrix(sncf[,2:13])))
+# conversion des données en série temporelle
+d=ts(sncf_vec,start = c(1963, 1), frequency = 12)
+
+```
+
+# Etude de la série  
+
+## Etude graphique : tendance et saisonnalité
+
+**Graphiques de tendance et saisonnalité : plot et monthplot**
+
+```{r graph12, echo=FALSE} 
+par(mfrow = c(1,2))
+plot(d,xlab="année",ylab="Nb voyageurs",sub="Graphe 1 : Tendance",cex.sub=0.9)
+reg1=lm(d~time(d))
+abline(reg1,col="blue")
+monthplot(d,xlab="mois", ylab="Nb voyageurs",sub="Graphe 2 : Saisonnalité",cex.sub=0.9)
+par(mfrow = c(1,1))
+title("Nombre de voyageurs SNCF entre 1963 et 1980")
+```
+
+Entre 1963 et 1968, la tendance moyenne du nombre de voyageurs SNCF semble stable, puis à partir de 1968, croit régulièrement jusqu'à la fin de la période.
+
+Une saisonnalité forte est constatée entre juin et août et en décembre (correspondant à une plus forte fréquentation du réseau SCNF pendant les vacances d'été et de Noël)  
+
+**Graphique retardé : lagplot**  
+
+Ce graphique permet de constater la correlation de la série avec elle même, à des plages de temps différentes (introduction d'un retard=lag).
+
+```{r graph3, echo=FALSE} 
+lag.plot(d,lags=12,layout=c(4,3),do.line=TRUE,main="Graphe 3 : Corrélation de la série avec son passé",cex.main=0.9)
+```
+ 
+D'après le diagramme retardé, on constate une autocorrélation de la série d'ordre 12 (les points se rassemblent autour de la 1ère bissectrice pour lag12). Le nombre de voyageurs SNCF présente donc une saisonnalité annuelle.
+
+## Décomposition de la série
+
+Il s'agit de mettre en évidence les composantes de la série : tendance / saisonnalité / bruit  
+
+**Décomposition manuelle**  
+
+```{r decompman, echo=FALSE} 
+trend_d=ma(d,order=12,centre=T)
+par(mfrow = c(1, 2))
+plot(as.ts(trend_d),xlab="année", ylab="tendance", main="Graphe 4 : composante tendance",cex.main=0.9)
+detrend_d=d-trend_d
+plot(as.ts(detrend_d),xlab="année", ylab="données - tendance", main="Graphe 5 : série sans la tendance",cex.main=0.9)
+mat_detrend_d=t(matrix(data=detrend_d,nrow=12))
+season_d=colMeans(mat_detrend_d,na.rm=T)
+plot(as.ts(rep(season_d,12)),xlab="nb de mois",ylab="",main="Graphe 6 : composante saisonnalité",cex.main=0.9)
+random_d=d-trend_d-season_d
+plot(as.ts(random_d),xlab="année",ylab="",main="Graphe 7 : composante bruit restant",cex.main=0.9)
+
+```
+
+**Décomposition automatique**  
+  
+On utilise ici la fonction *decompose ("additive")* (amplitude stable de la composante saisonnière) pour obtenir l'ensemble de la décomposition.  
+
+```{r decompaut, echo=FALSE} 
+decompose_d2=decompose(d,"additive")
+plot(decompose_d2,xlab="année")
+
+```
+
+La décomposition confirme les observations graphiques de la série :  
+
+   - tendance croissante (stable puis croissante à partir de 1968)  
+   - saisonnalité d'ordre 12 et d'amplitude stable (décomposition additive de la série)   
+  
+# Lissage exponentiel et prévision
+
+Il s'agit maintenant d'utiliser la méthode de lissage exponentiel pour faire une prédiction sur un an du nombre de voyageurs SNCF. Pour construire cette prédiction, nous utilisons les données de 1963 à 1979. La dernière année de données (1980) sera utilisée pour comparer la prévision calculée aux données réelles. Cela permettra d'estimer l'erreur de prediction.
+
+```{r decoup, echo=FALSE} 
+d_6379=window(d,start=1963,end=c(1979,12))
+d_6879=window(d,start=1968,end=c(1979,12))
+d_80=window(d,start=1980)
+
+```
+ 
+Nous avons vu que la série se caractérise par une tendance croissante, une saisonnalité d'ordre 12 et une décomposition additive .Dans ce cas, on utilise d'abord le lissage exponentiel triple qui prend en compte ces caractéristiques.  
+ 
+##Lissage exponentiel triple  
+
+Le lissage exponentiel triple prend en compte deux composantes additives : la tendance et la saisonnalité. Le modèle est de type "AAA"" (erreur additive aussi).
+
+ 
+```{r let, echo=FALSE} 
+fit_let=ets(d_6379,model="AAA")
+summary(fit_let)
+pred_let=forecast(fit_let,h=12)
+plot(pred_let,xlim=c(1980,1981),main="lissage exponentiel triple/observations")
+points(d_80,type="l",col='black',lwd=2)
+legend('bottom',c("observations","prédictions"),col=c("black","blue"),lty=rep(1,2),lwd=rep(2,2))
+```
+ 
+##Lissage automatique
+
+On sélectionne automatiquement les critères de lissage et on compare avec les prévisions du lissage exponentiel triple.
+
+
+```{r lauto, echo=FALSE} 
+fit_lauto=ets(d_6379,model="ZZZ")
+summary(fit_lauto)
+pred_lauto=forecast(fit_lauto,h=12)
+plot(pred_lauto,xlim=c(1980,1981),type="l",main="lissage exponentiel MAM/observations")
+points(d_80,type="l",col='black',lwd=2)
+legend('bottom',c("observations","prédictions"),col=c("black","blue"),lty=c(rep(1,3)),lwd=c(rep(2,3)))
+```
+ 
+Le modèle automatique sélectionne un modèle "MAM" : erreur multiplicative, tendance additive et saisonnalité multiplicative.
+
+
+**Comparaison des 2 lissages :**  
+Graphiquement, il semble que les 2 prévisions soient très proches et présentent peu d'écarts avec les observations de 1980.  
+
+Il apparait que pour le modèle MAM est légèrement meilleur car :  
+
+  - les erreurs de prévision sont un peu plus faibles 
+  (ME, RMSE, MAE, MPE, MAPE, MASE, ACF1)  
+
+  - les critères de qualité du modèle sont meilleurs  
+  (AIC, AICc et BIC plus légèrement faibles avec MAM)  
+
+##Lissage de meilleur AIC  
+
+On sélectionne le modèle de lissage donnant le meilleur AIC
+
+```{r laic, echo=FALSE} 
+fit_laic=ets(d_6379,ic="aic")
+summary(fit_laic)
+
+```
+
+Le modèle de lissage donnant le meilleur AIC est le lissage MAM.
+
+
+# Processus stationnaire
+
+Dans un premier temps, il s'agit de tester la stationnarité de la série.
+
+##Corrélogramme de la série : nombre de voyageurs SNCF entre 1963 et 1980  
+
+Traçons les graphiques mettant en évidence l'autocovariance et l'autocorrélation de la série. Il s'agit d'identifier le lien de la série avec son passé (même série à différents instants de retard=lag) . Si ce lien est significativement différent de 0, la série ne sera pas stationnaire. Si le corrélogramme montre une convergence vers 0, on pourra considérer que la série est stationnaire.
+
+```{r statio, echo=FALSE} 
+par(mfrow = c(1,2))
+acf(d,type="covariance",main="Covariance")
+acf(d,type="correlation",main="Correlation")
+
+```
+
+Ici la corrélation varie mais ne converge pas rapidement vers 0 (on observe une augmentation de la corrélation pour h=12 (lag= 1 an), c'est à dire une saisonnalité annuelle). La série *nombre de voyageurs SCNF* n'est donc pas stationnaire.
+
+##Test de blancheur
+
+Vérifions cette observation par le test du Portemanteau (Box test) :  
+H0 : les coefficients d'autocorrelation sont tous nuls jusqu'à l'ordre k (la serie est un bruit blanc, est donc stationnaire)  
+H1 : il existe au moins un coefficient jusqu'à l'ordre k significativement différent de 0 (la série n'est pas un bruit blanc, on ne peut pas confirmer ou infirmer la stationnarité de la série)
+
+```{r boxtest1, echo=FALSE} 
+Box.test(d,lag=20,type="Box-Pierce")
+```
+
+La p_value du test est ici < 5%, par conséquent on rejette H0. La série nombre de voyageurs SNCF n'est pas un bruit blanc.
+
+## Se ramener à une série stationnaire 
+
+Il s'agit de ramener la série d'origine non stationnaire à une série stationnaire en utilisant l'opérateur différence : on élimine ainsi la tendance et la saisonnalité de la série. Il reste alors que la partie résiduelle de la série. On teste alors la stationnarité des résidus (corrélogramme et test du portemanteau)
+
+**analyse du bruit restant**  
+```{r diff, echo=TRUE} 
+d_bruit=diff(diff(d,lag=12,difference=1),lag=1,difference=1)
+
+```
+
+```{r grapdiff, echo=FALSE} 
+par(mfrow = c(1,3))
+acf(d_bruit,main="")
+pacf(d_bruit,main="")
+plot(d_bruit,main="",xlab="année",ylab="bruit restant")
+
+Box.test(d_bruit,lag=20,type="Box-Pierce")
+
+```
+
+Les résidus de la série voyageurs SNCF (série - tendance - saisonnalité) ne sont pas stationnaires.En effet, la correlation (graphe ACF) diminue mais présente des pics qui ne confirment pas la convergence vers 0 ; p-value Box Pierce<5%.
+
+**transformation logarithmique**  
+
+Essayons de transformer la série d'origine en prenant son logarithme et regardons comment se comportent les résidus.
+
+```{r log, echo=FALSE} 
+logd=log(d)
+logd_bruit=diff(diff(logd,lag=12,difference=1),lag=1,difference=1)
+par(mfrow = c(1,3))
+acf(logd_bruit,main="")
+pacf(logd_bruit,main="")
+plot(logd_bruit,main="")
+Box.test(logd_bruit,lag=20,type="Box-Pierce")
+
+```
+
+En prenant le logarithme de la série, les résidus n'apparaissent pas comme stationnaires.  
+
+Les tentatives de stationnarisation de la série d'origine n'ont pas abouti (test de lissage par log ou sqrt non plus). Dans l'impossibilité de stationnariser, il n'est pas possible d'utiliser les modèles de type ARMA. 
+
+
+#Modélisation de la série et prévision
+
+##Sélection automatique de modèle 
+
+Voyons ce que donne la sélection automatique de modèle sur cette série : fonction auto.arima
+
+```{r modauto, echo=FALSE} 
+modelauto=auto.arima(d_6379)
+Box.test(modelauto$residuals,lag=20)
+
+```
+
+Le choix de modèle automatique conclut à un modèle SARIMA (1,1,1) (0,1,1)[12]. Dans ce cas, la série des résidus est un bruit blanc (test du portemanteau >5%), elle est donc stationnaire.
+
+##Prévision à partir d'un modele SARIMA 
+
+La prévision pour l'année 1980 selon le modèle SARIMA choisi automatiquement donne la prediction mensuelle et 2 intervalles de prediction avec les niveaux de confiance de 80% et 95%.
+
+```{r prevauto, echo=FALSE} 
+pred_sarima=forecast(modelauto,12)
+summary(pred_sarima)
+
+plot(pred_sarima,main="prédiction à partir d'un modèle SARIMA",ylab="Nombre de voyageurs",xlab="Temps", xlim=c(1980,1981))
+points(d_80,type="l",col='black',lwd=2)
+legend('bottom',c("observations","prédictions"),col=c("black","blue"),lty=rep(1,2),lwd=rep(2,2))
+
+```
+
+Les critères de qualité du modèle (AIC, AICc et BIC plus faibles) et de prédiction sont meilleurs avec SARIMA (1,1,1) (0,1,1)[12] (erreurs globalement plus faibles) qu'avec les modèles précédents.
+
+
+##Comparaison entre SARIMA et lissage exponentiel 
+
+**SARIMA versus lissage exponentiel triple AAA**
+
+```{r compSARLE, echo=FALSE} 
+
+plot(d,col="black",lwd=2,ylab="Nombre de voyageurs",xlab="Temps", xlim=c(1980,1981),ylim=range(c(d,pred_sarima$lower,pred_sarima$upper,pred_let$lower,pred_let$upper)))
+points(pred_sarima$mean,col="red",lwd=2,type="l")
+points(pred_sarima$lower[,2],col="red",type="l",lty=2)
+points(pred_sarima$upper[,2],col="red",type="l",lty=2)
+points(pred_let$mean,col="blue",lwd=2,type="l")
+points(pred_let$lower[,2],col="blue",type="l",lty=3)
+points(pred_let$upper[,2],col="blue",type="l",lty=3)
+legend("topleft",c("observations","SARIMA","Lissage exp."), col=c("black","red","blue"), lty=c(rep(1,3),2),lwd=c(rep(2,3),1),cex=0.7)
+
+```
+
+Le modèle SARIMA (1,1,1) (0,1,1)[12] est equivalent au lissage exponentiel triple. Leurs courbes de prévision et d'intervalle de prédiction sont confondues.
+
+**SARIMA versus lissage exponentiel MAM**
+
+```{r compSARLAUTO, echo=FALSE} 
+
+plot(d,col="black",lwd=2,ylab="Nombre de voyageurs",xlab="Temps", xlim=c(1980,1981),ylim=range(c(d,pred_sarima$lower,pred_sarima$upper,pred_lauto$lower,pred_lauto$upper)))
+points(pred_sarima$mean,col="red",lwd=2,type="l")
+points(pred_sarima$lower[,2],col="red",type="l",lty=2)
+points(pred_sarima$upper[,2],col="red",type="l",lty=2)
+points(pred_lauto$mean,col="blue",lwd=2,type="l")
+points(pred_lauto$lower[,2],col="blue",type="l",lty=3)
+points(pred_lauto$upper[,2],col="blue",type="l",lty=3)
+legend("topleft",c("observations","SARIMA","Lissage exp."), col=c("black","red","blue"), lty=c(rep(1,3),2),lwd=c(rep(2,3),1),cex=0.7)
+
+```
+
+Les courbes de prévision du modèle SARIMA (1,1,1) (0,1,1)[12] et du lissage exponentiel MAM sont confondues mais l'intervalle de prediction du modèle SARIMA est plus resserré autour des observation.SARIMA (1,1,1) (0,1,1)[12] est ici meilleur.
+
